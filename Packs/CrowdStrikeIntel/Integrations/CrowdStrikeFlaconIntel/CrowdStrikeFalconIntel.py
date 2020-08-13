@@ -22,7 +22,7 @@ MALICIOUS_DICTIONARY = {
     'high': 3
 }
 
-MALICIOUS_THRESHOLD = demisto.params().get('threshold')
+MALICIOUS_THRESHOLD = MALICIOUS_DICTIONARY.get(demisto.params().get('threshold', 'high'))
 
 
 ''' CLIENT '''
@@ -100,6 +100,30 @@ class Client:
     def domain(self):
         pass
 
+    def get_indicator(self, indicator_value, indicator_type):
+        args = {
+            'indicator': indicator_value,
+            'limit': 1
+        }
+        if indicator_type == 'hash':
+            length = len(indicator_value)
+            if length == 32:
+                hash_type = 'hash_md5'
+                args['type'] = hash_type
+            elif length == 64:
+                hash_type = 'hash_sha256'
+                args['type'] = hash_type
+            else:
+                raise Exception(f'Invalid hash. Hash length is: {length}. Please provide either MD5 (32 length)'
+                                f' or SHA256 (64 length) hash.')
+        elif indicator_type == 'ip':
+            args['type'] = 'ip_address'
+        else:
+            args['type'] = indicator_type
+
+        params = self.build_request_params(args)
+        return self._cs_client.http_request(method='GET', url_suffix='intel/combined/indicators/v1', params=params)
+
     def cs_actors(self, args):
         params = self.build_request_params(args)
         return self._cs_client.http_request(method='GET', url_suffix='intel/combined/actors/v1', params=params)
@@ -116,9 +140,63 @@ class Client:
 ''' HELPER FUNCTIONS '''
 
 
-def build_indicator(indicator_object: dict, indicator_type: str, title: str, append_context_function: Callable) -> dict:
+def update_malicious_context(ec: dict, indicator_value, indicator_type):
+    malicious_dict = {'Vendor': 'FalconIntel', 'Description': 'High confidence'}
+    if indicator_type == 'hash':
+        mal_file = {'Malicious':malicious_dict}
+        length = len(indicator_value)
+        hash_type = 'MD5' if length == 32 else 'SHA256'
+        mal_file[hash_type] = indicator_value
+        ec[outputPaths['file']] = mal_file
+    elif indicator_type == 'ip':
+        ec[outputPaths['ip']] = {'Address': indicator_value, 'Malicious': malicious_dict}
+    elif indicator_type == 'url':
+        ec[outputPaths['url']] = {'Data': indicator_value, 'Malicious': malicious_dict}
+    elif indicator_type == 'domain':
+        ec[outputPaths['domain']] = {'Name': indicator_value, 'Malicious': malicious_dict}
+
+
+def build_indicator(indicator_value, indicator_type: str, title: str, client: Client):
+    res = client.get_indicator(indicator_value, indicator_type)
+    resources: list = res.get('resources', [])
+    md = f'## {title}: {indicator_value}\n'
     ec: dict = dict()
-    return ec
+
+    if resources:
+        for r in resources:
+            md += indicator_to_md(r)
+            malicious_confidence: int = MALICIOUS_DICTIONARY.get(r.get('malicious_confidence'), 0)
+            if malicious_confidence == 3 or MALICIOUS_THRESHOLD == 1:
+                dbot_score = 3
+            elif malicious_confidence == 2 or MALICIOUS_THRESHOLD == 2:
+                dbot_score = 2
+            else:
+                dbot_score = 1
+
+            if indicator_type == 'hash':
+                ec['DBotScore'] = dbot_type_hash_list(indicator_value, dbot_score)
+            else:
+                ec['DBotScore'] = {
+                    'Indicator': indicator_value,
+                    'Type': indicator_type,
+                    'Vendor': 'FalconIntel',
+                    'Score': dbot_score
+                }
+    else:
+        md += 'No indicator found'
+        if indicator_type == 'hash':
+            ec['DBotScore'] = dbot_type_hash_list(indicator_value, 0)
+        else:
+            ec['DBotScore'] = {
+                'Indicator': indicator_value,
+                'Type': indicator_type,
+                'Vendor': 'FalconIntel',
+                'Score': 0
+            }
+
+    update_malicious_context(ec, indicator_value, indicator_type)
+
+    return md, ec, res
 
 
 def get_values(l: list) -> str:
@@ -154,24 +232,19 @@ def indicator_to_md(o: dict) -> str:
         relations: list = o.get('relations')
         labels: list = o.get('labels')
 
-        md += '### ' + indicator_value + '\n' if indicator_value else ''
-        md += '- Type: ' + indicator_type + '\n' if indicator_type else ''
-        md += '- Last update: ' + timestamp_to_datestring(last_update) + '\n' if last_update else ''
-        md += '- Publish date: ' + timestamp_to_datestring(publish_date) + '\n' if publish_date else ''
-        md += '- Malicious confidence: ' + malicious_confidence + '\n' if malicious_confidence else ''
-        md += '- Reports: ' + ', '.join(reports) + '\n' if reports else ''
-        md += '- Actors: ' + ', '.join(actors) + '\n' if actors else ''
-        md += '- Malware families: ' + ', '.join(malware_families) + '\n' if malware_families else ''
-        md += '- Kill chains: ' + ', '.join(kill_chains) + '\n' if kill_chains else ''
-        md += '- Domain types: ' + ', '.join(domain_types) + '\n' if domain_types else ''
-        md += '- IP Address types: ' + ', '.join(ip_address_types) + '\n' if ip_address_types else ''
-
-        if relations:
-            md += '#### Relations\n'
-            md += tableToMarkdown(name='', t=relations[:10]) + '\n'
-        if labels:
-            md += '#### Labels\n'
-            md += tableToMarkdown(name='', t=labels[:10]) + '\n'
+        md += f'### {indicator_value}\n' if indicator_value else ''
+        md += f'- Type: {indicator_type}\n' if indicator_type else ''
+        md += f'- Last update: {timestamp_to_datestring(last_update)}\n' if last_update else ''
+        md += f'- Publish date: {timestamp_to_datestring(publish_date)}\n' if publish_date else ''
+        md += f'- Malicious confidence: {malicious_confidence}\n' if malicious_confidence else ''
+        md += f'- Reports: {", ".join(reports)}\n' if reports else ''
+        md += f'- Actors: {", ".join(actors)}\n' if actors else ''
+        md += f'- Malware families: {", ".join(malware_families)}\n' if malware_families else ''
+        md += f'- Kill chains: {", ".join(kill_chains)}\n' if kill_chains else ''
+        md += f'- Domain types: {", ".join(domain_types)}\n' if domain_types else ''
+        md += f'- IP Address types: {", ".join(ip_address_types)}\n' if ip_address_types else ''
+        md += f'#### Relations\n{tableToMarkdown(name="", t=relations[:10])}\n' if relations else ''
+        md += f'#### Labels\n{tableToMarkdown(name="", t=labels[:10])}\n' if labels else ''
 
     return md
 
@@ -256,20 +329,20 @@ def test_module(client: Client):
     raise Exception('Quota limitation is unreachable')
 
 
-def file_command(client: Client):
-    pass
+def file_command(file, client: Client):
+    return build_indicator(file, 'hash', 'Falcon Intel file reputation for', client)
 
 
-def ip_command(client: Client):
-    pass
+def ip_command(ip, client: Client):
+    return build_indicator(ip, 'ip', 'Falcon Intel IP reputation for', client)
 
 
-def url_command(client: Client):
-    pass
+def url_command(url, client: Client):
+    return build_indicator(url, 'url', 'Falcon Intel URL reputation for', client)
 
 
-def domain_command(client: Client):
-    pass
+def domain_command(domain, client: Client):
+    return build_indicator(domain, 'domain', 'Falcon Intel domain reputation for', client)
 
 
 def cs_actors_command(client: Client):
@@ -300,31 +373,29 @@ def cs_actors_command(client: Client):
         region = r.get('region', {}).get('value')
         kill_chain = r.get('kill_chain')
 
-        if image_url:
-            md += '![' + name + '](' + image_url + ' "' + name + '")\n'
-
-        md += '### ' + name + '\n'
-        md += 'ID: [' + str(actor_id) + '](' + url + ')\n'
-        md += 'Slug: ' + slug + '\n'
-        md += 'Short description: ' + short_description + '\n'
-        md += 'First/Last activity: ' + timestamp_to_datestring(first_activity_date) + ' / ' + \
-              timestamp_to_datestring(last_activity_date) + '\n'
-        md += 'Active: ' + str(active) + '\n' if active is not None else ''
-        md += 'Known as: ' + known_as + '\n' if known_as else ''
-        md += '- Target industries: ' + get_values(target_industries) + '\n' if target_industries else ''
-        md += '- Target countries: ' + get_values(target_countries) + '\n' if target_countries else ''
-        md += '- Origins: ' + get_values(origins) + '\n' if origins else ''
-        md += '- Motivations: ' + get_values(motivations) + '\n' if motivations else ''
-        md += '- Capability: ' + capability + '\n' if capability else ''
-        md += '- Group: ' + group + '\n' if group else ''
-        md += '- Region: ' + region + '\n' if region else ''
+        md += f'![{name}]({image_url} "{name}")\n' if image_url else ''
+        md += f'### {name}\n'
+        md += f'ID: [{str(actor_id)}] ({url})\n'
+        md += f'Slug: {slug}\n'
+        md += f'Short description: {short_description}\n'
+        md += f'First/Last activity: {timestamp_to_datestring(first_activity_date)} /' \
+              f' {timestamp_to_datestring(last_activity_date)}\n'
+        md += f'Active: {str(active)}\n' if active is not None else ''
+        md += f'Known as: {known_as}\n' if known_as else ''
+        md += f'- Target industries: {get_values(target_industries)}\n' if target_industries else ''
+        md += f'- Target countries: {get_values(target_countries)}\n' if target_countries else ''
+        md += f'- Origins: {get_values(origins)}\n' if origins else ''
+        md += f'- Motivations: {get_values(motivations)}\n' if motivations else ''
+        md += f'- Capability: {capability}\n' if capability else ''
+        md += f'- Group: {group}\n' if group else ''
+        md += f'- Region: {region}\n' if region else ''
 
         if kill_chain:
             md += '#### Kill chain\n'
             for kc_field in kill_chain:
                 if 'rich_text' in kc_field and kc_field.index('rich_text') == 0:
                     continue
-                md += '- ' + string_to_table_header(kc_field) + ': ' + kill_chain.get(kc_field)
+                md += f'- {string_to_table_header(kc_field)}: {kill_chain.get(kc_field)}'
             md += '\n'
 
     return md, {}, res
@@ -336,7 +407,7 @@ def cs_indicators_command(client: Client):
     resources: list = res.get('resources', [])
 
     if not resources:
-        return 'No reports found.', {}, res
+        return 'No indicators found.', {}, res
 
     md: str = f"## Falcon Intel Indicator Search for: {args.get('indicator')}\n"
     ec: dict = dict()
@@ -410,41 +481,43 @@ def cs_reports_command(client: Client):
         motivations: list = r.get('motivations')
         tags: list = r.get('tags')
 
-        md += '### ' + name + '\n'
-        md += 'ID: [' + str(report_id) + '](' + url + ')\n'
-        md += 'Type: ' + report_type + '\n'
-        md += 'Sub type: ' + sub_type + '\n'
-        md += 'Slug: ' + slug + '\n'
-        md += 'Created: ' + timestamp_to_datestring(created_date) + '\n'
-        md += 'Last modified: ' + timestamp_to_datestring(last_modified_date) + '\n'
-        md += 'Description: ' + short_description + '\n'
-        md += '- Target industries: ' + get_values(target_industries) + '\n' if target_industries else ''
-        md += '- Target countries: ' + get_values(target_countries) + '\n' if target_countries else ''
-        md += '- Motivations: ' + get_values(motivations) + '\n' if motivations else ''
-        md += '- Tags: ' + get_values(tags) + '\n' if motivations else ''
+        md += f'### {name}\n'
+        md += f'ID: [{str(report_id)}] ({url})\n'
+        md += f'Type: {report_type}\n'
+        md += f'Sub type: {sub_type}\n'
+        md += f'Slug: {slug}\n'
+        md += f'Created: {timestamp_to_datestring(created_date)}\n'
+        md += f'Last modified: {timestamp_to_datestring(last_modified_date)}\n'
+        md += f'Short description: {short_description}\n'
+        md += f'- Target industries: {get_values(target_industries)}\n' if target_industries else ''
+        md += f'- Target countries: {get_values(target_countries)}\n' if target_countries else ''
+        md += f'- Motivations: {get_values(motivations)}\n' if motivations else ''
+        md += f'- Tags: {get_values(tags)}\n' if motivations else ''
 
     return md, {}, res
 
 
 def main():
     params: dict = demisto.params()
+    args: dict = demisto.args()
     try:
         command = demisto.command()
         LOG(f'Command being called in CrowdStrikeFalconIntel is: {command}')
         client = Client(params=params)
         if command == 'test-module':
-            return_outputs(test_module(client))
+            result = test_module(client)
+            return_outputs(result)
         elif command == 'file':
-            hr, ops, raw = file_command(client)
+            hr, ops, raw = file_command(args['file'], client)
             return_outputs(hr, ops, raw)
         elif command == 'ip':
-            hr, ops, raw = ip_command(client)
+            hr, ops, raw = ip_command(args['ip'], client)
             return_outputs(hr, ops, raw)
         elif command == 'url':
-            hr, ops, raw = url_command(client)
+            hr, ops, raw = url_command(args['url'], client)
             return_outputs(hr, ops, raw)
         elif command == 'domain':
-            hr, ops, raw = domain_command(client)
+            hr, ops, raw = domain_command(args['domain'], client)
             return_outputs(hr, ops, raw)
         elif command == 'cs-actors':
             hr, ops, raw = cs_actors_command(client)
