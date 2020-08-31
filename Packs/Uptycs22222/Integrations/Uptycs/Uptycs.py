@@ -63,7 +63,7 @@ def restcall(method, api, **kwargs):
     try:
         request_func = getattr(requests, method)
     except AttributeError:
-        return_error("Invalid method: {0}".format(method))
+        return_error("Invalid method 3: {0}".format(method))
 
     try:
         response = request_func(
