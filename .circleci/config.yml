@@ -331,13 +331,13 @@ jobs:
     <<: *environment
     steps:
       - checkout
-      - *restore_cache
+      #  - *restore_cache
       - *prepare_environment
-      - save_cache:
-          paths:
-            - venv
-            - node_modules
-          key: venv-{{ checksum "dev-requirements-py2.txt" }}-{{ checksum "dev-requirements-py3.txt" }}-{{ checksum ".circleci/build-requirements.txt" }}-{{ checksum "package-lock.json" }}
+#      - save_cache:
+#          paths:
+#            - venv
+#            - node_modules
+#          key: venv-{{ checksum "dev-requirements-py2.txt" }}-{{ checksum "dev-requirements-py3.txt" }}-{{ checksum ".circleci/build-requirements.txt" }}-{{ checksum "package-lock.json" }}
       - *get_contribution_pack
       - *add_ssh_keys
       - *persist_to_workspace
@@ -352,7 +352,7 @@ jobs:
           condition: << pipeline.parameters.instance_tests >>
           steps:
             - setup_remote_docker
-            - *restore_cache
+            #  - *restore_cache
             - *add_ssh_keys
             - *prepare_environment
             - *infrastructure_testing
@@ -375,7 +375,7 @@ jobs:
       - unless:
           condition: << pipeline.parameters.instance_tests >>
           steps:
-            - *restore_cache
+            #  - *restore_cache
             - *add_ssh_keys
             - *prepare_environment
             - *secrets
@@ -448,7 +448,7 @@ jobs:
     <<: *environment
     steps:
       - checkout
-      - *restore_cache
+      #  - *restore_cache
       - *prepare_environment
       - *get_contribution_pack
       - *add_ssh_keys
@@ -636,7 +636,7 @@ jobs:
               - << pipeline.parameters.non_ami_run >>
           steps:
             - *attach_workspace
-            - *restore_cache
+            #  - *restore_cache
             - *add_ssh_keys
             - *prepare_environment
             - run:
@@ -972,7 +972,7 @@ jobs:
     <<: *environment
     steps:
       - checkout
-      - *restore_cache
+      #  - *restore_cache
       - *prepare_environment
       - *secrets
       - *validate_files_and_yaml
